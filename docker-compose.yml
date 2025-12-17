@@ -1,9 +1,9 @@
 services:
   postgres:
     image: postgres:16
-    env_file: .env          # Utiliser les variables définies dans .env
+    env_file: .env          
     volumes:
-      - ./db/init:/docker-entrypoint-initdb.d   # Monter les scripts d'init
+      - ./db/init:/docker-entrypoint-initdb.d   
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
@@ -12,7 +12,7 @@ services:
     build: ./services/prefect
     depends_on:
       - postgres
-    env_file: .env          # Réutiliser les mêmes identifiants Postgres
+    env_file: .env          
     environment:
       PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       PREFECT_API_URL: http://0.0.0.0:4200/api
