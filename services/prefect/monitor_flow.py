@@ -1,5 +1,4 @@
 import os
-import time
 from pathlib import Path
 from pprint import pprint
 
@@ -15,6 +14,7 @@ from evidently.metrics import ValueDrift
 from evidently import Dataset
 from evidently import DataDefinition
 
+from train_and_compare_flow import train_and_compare_flow  # <-- ajout pour retraining
 
 # ----------------------------
 # Configuration
@@ -22,23 +22,20 @@ from evidently import DataDefinition
 REPORT_DIR = os.getenv("REPORT_DIR", "/reports/evidently")
 FEAST_REPO = os.getenv("FEAST_REPO", "/repo")
 
-# Dates utilisées dans le projet (month_000 et month_001)
 AS_OF_REF_DEFAULT = "2024-01-31"
 AS_OF_CUR_DEFAULT = "2024-02-29"
-
 
 # ----------------------------
 # DB helpers
 # ----------------------------
 def get_engine():
     uri = (
-        f"postgresql+psycopg2://{os.getenv('POSTGRES_USER','streamflow')}:"
+        f"postgresql+psycopg2://{os.getenv('POSTGRES_USER','streamflow')}:" 
         f"{os.getenv('POSTGRES_PASSWORD','streamflow')}@"
         f"{os.getenv('POSTGRES_HOST','postgres')}:5432/"
         f"{os.getenv('POSTGRES_DB','streamflow')}"
     )
     return create_engine(uri)
-
 
 def fetch_entity_df(engine, as_of: str) -> pd.DataFrame:
     q = """
@@ -48,45 +45,39 @@ def fetch_entity_df(engine, as_of: str) -> pd.DataFrame:
     """
     df = pd.read_sql(q, engine, params={"as_of": as_of})
     if df.empty:
-        raise RuntimeError(
-            f"Aucun snapshot trouvé pour as_of={as_of}. "
-            "Vérifiez les dates des snapshots dans votre base."
-        )
+        raise RuntimeError(f"Aucun snapshot trouvé pour as_of={as_of}")
     df = df.rename(columns={"as_of": "event_timestamp"})
     df["event_timestamp"] = pd.to_datetime(df["event_timestamp"])
     return df[["user_id", "event_timestamp"]]
 
-
 def fetch_labels(engine, as_of: str) -> pd.DataFrame:
+    # utilisation de 'as_of' à la place de 'period_start'
     try:
         q = """
-        SELECT user_id, period_start, churn_label
+        SELECT user_id, as_of AS event_timestamp, churn_label
         FROM labels
-        WHERE period_start = %(as_of)s
+        WHERE as_of = %(as_of)s
         """
         labels = pd.read_sql(q, engine, params={"as_of": as_of})
         if not labels.empty:
-            labels = labels.rename(columns={"period_start": "event_timestamp"})
             labels["event_timestamp"] = pd.to_datetime(labels["event_timestamp"])
             return labels[["user_id", "event_timestamp", "churn_label"]]
     except Exception:
         pass
 
+    # fallback si labels filtrés vides
     q2 = "SELECT user_id, churn_label FROM labels"
     labels = pd.read_sql(q2, engine)
     if labels.empty:
         return pd.DataFrame(columns=["user_id", "event_timestamp", "churn_label"])
-
     labels["event_timestamp"] = pd.to_datetime(as_of)
     return labels[["user_id", "event_timestamp", "churn_label"]]
-
 
 # ----------------------------
 # Feature retrieval (Feast)
 # ----------------------------
 def build_features(entity_df: pd.DataFrame) -> pd.DataFrame:
     store = FeatureStore(repo_path=FEAST_REPO)
-
     features = [
         "subs_profile_fv:months_active",
         "subs_profile_fv:monthly_fee",
@@ -103,13 +94,8 @@ def build_features(entity_df: pd.DataFrame) -> pd.DataFrame:
         "support_agg_90d_fv:support_tickets_90d",
         "support_agg_90d_fv:ticket_avg_resolution_hrs_90d",
     ]
-
-    hf = store.get_historical_features(
-        entity_df=entity_df,
-        features=features,
-    )
+    hf = store.get_historical_features(entity_df=entity_df, features=features)
     return hf.to_df()
-
 
 def get_final_features(as_of: str) -> pd.DataFrame:
     engine = get_engine()
@@ -118,9 +104,7 @@ def get_final_features(as_of: str) -> pd.DataFrame:
     labels_df = fetch_labels(engine, as_of)
     if labels_df.empty:
         return feat_df
-    df = feat_df.merge(labels_df, on=["user_id", "event_timestamp"], how="inner")
-    return df
-
+    return feat_df.merge(labels_df, on=["user_id", "event_timestamp"], how="inner")
 
 # ----------------------------
 # Evidently dataset wrapper
@@ -129,13 +113,8 @@ def build_dataset_from_df(df: pd.DataFrame) -> Dataset:
     ignored = ["user_id", "event_timestamp"]
     cat_cols = [c for c in df.columns if df[c].dtype in ["object", "bool"] and c not in ignored]
     num_cols = [c for c in df.columns if c not in cat_cols + ignored]
-    definition = DataDefinition(
-        numerical_columns=num_cols,
-        categorical_columns=cat_cols,
-    )
-    dataset = Dataset.from_pandas(df, data_definition=definition)
-    return dataset
-
+    definition = DataDefinition(numerical_columns=num_cols, categorical_columns=cat_cols)
+    return Dataset.from_pandas(df, data_definition=definition)
 
 # ----------------------------
 # Prefect tasks
@@ -143,7 +122,6 @@ def build_dataset_from_df(df: pd.DataFrame) -> Dataset:
 @task
 def build_dataset(as_of: str) -> pd.DataFrame:
     return get_final_features(as_of)
-
 
 @task
 def compute_target_drift(reference_df: pd.DataFrame, current_df: pd.DataFrame) -> float:
@@ -158,7 +136,6 @@ def compute_target_drift(reference_df: pd.DataFrame, current_df: pd.DataFrame) -
     target_drift = abs(cur_rate - ref_rate)
     print(f"[Target drift] ref_rate={ref_rate:.4f} cur_rate={cur_rate:.4f} abs_diff={target_drift:.4f}")
     return target_drift
-
 
 @task
 def run_evidently(reference_df: pd.DataFrame, current_df: pd.DataFrame, as_of_ref: str, as_of_cur: str):
@@ -185,53 +162,33 @@ def run_evidently(reference_df: pd.DataFrame, current_df: pd.DataFrame, as_of_re
     summary = eval_result.dict()
     pprint(summary)
 
-    drift_share = None
+    drift_share = 0.0
     for metric in summary.get("metrics", []):
         if "DriftedColumnsCount" in metric.get("metric_id", ""):
             drift_share = metric["value"]["share"]
 
-    if drift_share is None:
-        drift_share = 0.0
-
-    return {
-        "html": str(html_path),
-        "json": str(json_path),
-        "drift_share": float(drift_share),
-    }
-
+    return {"html": str(html_path), "json": str(json_path), "drift_share": float(drift_share)}
 
 @task
-def decide_action(as_of_ref: str, as_of_cur: str, drift_share: float, target_drift: float, threshold: float = 0.3) -> str:
+def decide_action(as_of_ref: str, as_of_cur: str, drift_share: float, target_drift: float, threshold: float = 0.02) -> str:
     if drift_share >= threshold:
-        return (
-            f"RETRAINING_TRIGGERED (SIMULÉ) drift_share={drift_share:.2f} >= {threshold:.2f} "
-            f"(target_drift={target_drift if target_drift == target_drift else 'NaN'})"
-        )
-    return (
-        f"NO_ACTION drift_share={drift_share:.2f} < {threshold:.2f} "
-        f"(target_drift={target_drift if target_drift == target_drift else 'NaN'})"
-    )
-
+        decision = train_and_compare_flow(as_of=as_of_cur)
+        return f"RETRAINING_TRIGGERED drift_share={drift_share:.2f} >= {threshold:.2f} -> {decision}"
+    return f"NO_ACTION drift_share={drift_share:.2f} < {threshold:.2f}"
 
 # ----------------------------
 # Prefect flow
 # ----------------------------
 @flow(name="monitor_month")
-def monitor_month_flow(
-    as_of_ref: str = AS_OF_REF_DEFAULT,
-    as_of_cur: str = AS_OF_CUR_DEFAULT,
-    threshold: float = 0.3,
-):
+def monitor_month_flow(as_of_ref: str = AS_OF_REF_DEFAULT, as_of_cur: str = AS_OF_CUR_DEFAULT, threshold: float = 0.02):
     ref_df = build_dataset(as_of_ref)
     cur_df = build_dataset(as_of_cur)
     tdrift = compute_target_drift(ref_df, cur_df)
     res = run_evidently(ref_df, cur_df, as_of_ref, as_of_cur)
     msg = decide_action(as_of_ref, as_of_cur, res["drift_share"], tdrift, threshold)
 
-    print(
-        f"[Evidently] report_html={res['html']} report_json={res['json']} "
-        f"drift_share={res['drift_share']:.2f} -> {msg}"
-    )
+    print(f"[Evidently] report_html={res['html']} report_json={res['json']} "
+          f"drift_share={res['drift_share']:.2f} -> {msg}")
 
 if __name__ == "__main__":
     monitor_month_flow()

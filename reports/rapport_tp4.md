@@ -1,3 +1,5 @@
+# Rapport TP4
+
 ## Exercice 1 - Mise en route
 
 ![alt text](<Capture d'écran 2025-12-24 110231.png>)
@@ -58,13 +60,13 @@ En serving, plusieurs problèmes peuvent provoquer des prédictions incorrectes 
 
 ## Exercice 6 - Réflexion de synthèse
 
-# 6.a
+### 6.a
 MLflow garantit la traçabilité complète des entraînements : chaque run est enregistré avec ses paramètres, ses métriques et ses artefacts. On peut ainsi savoir exactement quelles données, quel code et quelle configuration ont produit un modèle donné. Au niveau de l’identification des modèles servis, MLflow permet de référencer un modèle via le Model Registry, en associant un nom unique et des versions à chaque run, ce qui évite toute confusion sur le modèle utilisé en production.
 
-# 6.b
+### 6.b
 Le stage Production indique à l’API quel modèle utiliser au démarrage : MLflow charge automatiquement la dernière version validée en Production. Cela permet de garantir que seule une version testée et approuvée est servie, et évite de déployer accidentellement un modèle expérimental ou non validé. Cela facilite également les rollbacks vers une version antérieure en Production si nécessaire.
 
-# 6.c
+### 6.c
 Même avec MLflow, la reproductibilité peut être compromise à plusieurs endroits :
 
 Les données --> si les features utilisées pour l’entraînement changent ou si l’on ne conserve pas un snapshot exact, la prédiction peut diverger.
