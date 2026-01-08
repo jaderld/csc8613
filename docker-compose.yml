@@ -49,6 +49,8 @@ services:
     volumes:
       - ./api:/app
       - ./services/feast_repo/repo:/repo   # pour que l'API voie le repo Feast
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.16.0
